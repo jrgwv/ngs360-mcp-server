@@ -138,12 +138,31 @@ def register_wes_tools(mcp: FastMCP, wes_client: NGS360Client) -> None:
         """Get detailed information about a workflow run.
 
         Returns the run request, state, run log (stdout/stderr), task logs,
-        and output files.
+        and output files. For a failed run this often has no useful error
+        text: call wes_explain_run_failure to get the reason.
 
         Args:
             run_id: The workflow run identifier
         """
         return await wes_client.get(f"/runs/{run_id}")
+
+    @mcp.tool()
+    async def wes_explain_run_failure(run_id: str) -> dict:
+        """Explain why a workflow run failed.
+
+        Use this when a run is in EXECUTOR_ERROR or SYSTEM_ERROR, or when
+        wes_get_run_log shows an exit code but no useful stderr. NGS360
+        looks up the reason on the server, so this needs no AWS access.
+
+        Returns the execution engine's status and failure reason (for
+        example CANNOT_START_CONTAINER_ERROR), its status message, any
+        failed tasks, and the last lines of the engine log. When
+        `available` is false, `note` says why nothing more could be read.
+
+        Args:
+            run_id: The workflow run identifier (the WES run id)
+        """
+        return await wes_client.get(f"/runs/{run_id}/diagnosis")
 
     @mcp.tool()
     async def wes_get_run_status(run_id: str) -> dict:

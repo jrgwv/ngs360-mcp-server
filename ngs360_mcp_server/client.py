@@ -10,18 +10,67 @@ Resolution order for every call:
    This is how a caller acts as a specific NGS360 user — the agent forwards the
    logged-in user's bearer token and the API's own per-user authorization decides
    what the call may do.
-2. ``NGS360_API_TOKEN`` from the environment. Used by the stdio transport, which
-   has no inbound HTTP request at all.
+2. A stored API key, used by the stdio transport, which has no inbound HTTP
+   request at all. It is read once at startup from the first of:
+   ``NGS360_API_TOKEN`` (the key itself), ``NGS360_API_TOKEN_FILE`` (a file
+   holding the key, readable only by its owner), or ``NGS360_API_TOKEN_KEYCHAIN``
+   (the name of a macOS Keychain item holding the key). The last two keep the
+   key out of any client config file.
 3. Nothing. No ``Authorization`` header is sent and the API answers as it does
    for any unauthenticated caller.
 """
 
 import os
+import stat
+import subprocess
+from pathlib import Path
 from typing import Any
 
 import httpx
 
 from ngs360_mcp_server.auth import get_caller_authorization
+
+
+def load_stored_token() -> str:
+    """Return the API key for the stdio transport, or "" when none is configured.
+
+    Order: NGS360_API_TOKEN, then NGS360_API_TOKEN_FILE, then NGS360_API_TOKEN_KEYCHAIN.
+    The key is never logged. A misconfigured file or Keychain item raises, so the user
+    sees the reason instead of an unexplained 401.
+    """
+    direct = os.environ.get("NGS360_API_TOKEN", "").strip()
+    if direct:
+        return direct
+
+    path = os.environ.get("NGS360_API_TOKEN_FILE", "").strip()
+    if path:
+        file = Path(path).expanduser()
+        try:
+            mode = file.stat().st_mode
+        except OSError as exc:
+            raise RuntimeError(f"NGS360_API_TOKEN_FILE cannot be read: {exc.strerror}") from exc
+        if os.name == "posix" and mode & (stat.S_IRWXG | stat.S_IRWXO):
+            raise RuntimeError(
+                f"NGS360_API_TOKEN_FILE {file} is readable by other users; run: chmod 600 {file}"
+            )
+        return file.read_text().strip()
+
+    service = os.environ.get("NGS360_API_TOKEN_KEYCHAIN", "").strip()
+    if service:
+        # Argument list, no shell: the item name is never interpreted by a shell.
+        result = subprocess.run(
+            ["security", "find-generic-password", "-s", service, "-w"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"No Keychain item named {service!r} (add it with: "
+                f"security add-generic-password -s {service} -a ngs360 -w)"
+            )
+        return result.stdout.strip()
+    return ""
 
 
 def _inbound_authorization() -> str | None:
@@ -109,7 +158,7 @@ class NGS360Client:
         ).rstrip("/")
         # Fallback credential, used only when the request carries none of its
         # own -- i.e. under stdio, where the process serves a single user.
-        self.token = token or os.environ.get("NGS360_API_TOKEN", "")
+        self.token = token or load_stored_token()
         self.path_prefix = path_prefix
         self._client: httpx.AsyncClient | None = None
 

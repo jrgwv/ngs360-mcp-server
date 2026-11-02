@@ -1,6 +1,6 @@
 [project]
 name = "ngs360-mcp-server"
-version = "0.1.0"
+version = "0.1.1"
 description = "MCP Server for the NGS360 API"
 readme = "README.md"
 requires-python = ">=3.11"
